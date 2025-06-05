@@ -1,6 +1,5 @@
-```note:
-This is a test interface to provide a plaground for testing Uniswap V4 contracts and is not meant for production use.
-```
+:::note This is a test interface to provide a plaground for testing Uniswap V4 contracts and is not meant for production use.
+:::
 
 # Uniswap V4 Interface
 

@@ -277,13 +277,7 @@ export const Header: React.FC<HeaderProps> = ({ activeNav, onNavChange }) => {
         >
           Trade
         </NavLink>
-        <NavLink 
-          $active={activeNav === NavType.EXPLORE} 
-          onClick={() => onNavChange(NavType.EXPLORE)}
-        >
-          Explore
-        </NavLink>
-        <NavLink 
+<NavLink 
           $active={activeNav === NavType.POOL} 
           onClick={() => onNavChange(NavType.POOL)}
         >

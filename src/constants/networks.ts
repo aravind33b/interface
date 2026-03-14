@@ -64,10 +64,10 @@ export const SUPPORTED_NETWORKS: NetworkConfig[] = [
     },
     rpcUrls: {
       default: {
-        http: ['https://unichain-sepolia-rpc.publicnode.com']
+        http: ['https://sepolia.unichain.org']
       },
       public: {
-        http: ['https://unichain-sepolia-rpc.publicnode.com']
+        http: ['https://sepolia.unichain.org']
       }
     },
     blockExplorers: {
@@ -77,6 +77,6 @@ export const SUPPORTED_NETWORKS: NetworkConfig[] = [
       }
     },
     testnet: true,
-    rpcUrl: import.meta.env.VITE_SEPOLIA_RPC_URL,
+    rpcUrl: 'https://sepolia.unichain.org',
   },
 ]

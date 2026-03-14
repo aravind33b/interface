@@ -88,8 +88,13 @@ const TokenName = styled.span`
 
 const TokenBalance = styled.div`
   color: ${({ theme }) => theme.colors.neutral2};
-  font-size: 16px;
+  font-size: 14px;
   margin-left: auto;
+  text-align: right;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 `
 
 const ErrorMessage = styled.div`
@@ -136,7 +141,7 @@ export const TokenSelector: React.FC<Props> = ({ label, token, onChange, error }
               <TokenSymbol>{token.symbol}</TokenSymbol>
               <TokenName>{token.name}</TokenName>
             </TokenDetails>
-            {balance && <TokenBalance>{balance} {token.symbol}</TokenBalance>}
+            {balance && <TokenBalance>{parseFloat(balance).toLocaleString(undefined, { maximumFractionDigits: 4 })} {token.symbol}</TokenBalance>}
           </TokenInfo>
         ) : (
           <TokenPlaceholder>

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import styled from 'styled-components'
+import confetti from 'canvas-confetti'
 import { TokenSelector } from '../CreatePool/TokenSelector'
 import { SwapSettings } from './SwapSettings'
 import { useV4Swap } from '../../hooks/useV4Swap'
@@ -83,6 +84,7 @@ const InputRow = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
 `
 
 const AmountInput = styled.input`
@@ -94,8 +96,9 @@ const AmountInput = styled.input`
   outline: none;
   padding: 0;
   text-align: left;
-  width: 100%;
-  
+  flex: 1;
+  min-width: 0;
+
   &::placeholder {
     color: ${({ theme }) => theme.colors.neutral3};
   }
@@ -293,16 +296,19 @@ export function SwapForm() {
     validation,
     isSwapping,
     isValidatingPool,
+    isQuoting,
     poolInfo,
     updateTokenIn,
     updateTokenOut,
     updateAmountIn,
+    updateAmountOut,
     updatePoolId,
     updateSlippageTolerance,
     updateDeadline,
     swapTokens,
     executeSwap,
-    validateSwap
+    validateSwap,
+    getQuote,
   } = useV4Swap()
   
   const [error, setError] = useState<string | null>(null)
@@ -335,8 +341,32 @@ export function SwapForm() {
         setError(result.error || 'Swap failed');
       } else if (result.txHash) {
         const shortHash = `${result.txHash.slice(0, 10)}...${result.txHash.slice(-8)}`;
-        setSuccessMessage(`Swap successful! Tx: ${shortHash}`);
         updateAmountIn('');
+        // Set success message after clearing input so the useEffect doesn't wipe it
+        setTimeout(() => {
+          setSuccessMessage(`Swap successful! Tx: ${shortHash}`);
+        }, 0);
+
+        // Fire confetti
+        confetti({
+          particleCount: 150,
+          spread: 70,
+          origin: { y: 0.6 },
+        });
+        setTimeout(() => {
+          confetti({
+            particleCount: 100,
+            angle: 60,
+            spread: 55,
+            origin: { x: 0, y: 0.6 },
+          });
+          confetti({
+            particleCount: 100,
+            angle: 120,
+            spread: 55,
+            origin: { x: 1, y: 0.6 },
+          });
+        }, 250);
         
         // If we have pool info and a successful swap, add to deployed pools
         if (poolInfo && selectedPoolKey) {
@@ -432,26 +462,38 @@ export function SwapForm() {
     updatePoolId(poolKeyString);
   };
   
-  // Clear messages when inputs change
+  // Fetch quote when inputs change
+  useEffect(() => {
+    if (!swapState.amountIn || !swapState.tokenIn || !swapState.tokenOut || !swapState.poolKey) {
+      updateAmountOut('');
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      getQuote(swapState.amountIn, swapState.tokenIn!, swapState.tokenOut!, swapState.poolKey!);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [swapState.amountIn, swapState.tokenIn, swapState.tokenOut, swapState.poolKey, getQuote]);
+
+  // Clear error when inputs change; clear success only on meaningful new input
   useEffect(() => {
     setError(null);
-    setSuccessMessage(null);
   }, [swapState.tokenIn, swapState.tokenOut, swapState.amountIn, selectedPoolKey]);
+
+  useEffect(() => {
+    if (swapState.amountIn) {
+      setSuccessMessage(null);
+    }
+  }, [swapState.amountIn]);
   
   return (
     <Container>
       <MainContent>
-        <TestPoolDeployer onPoolDeployed={handlePoolDeployed} />
-        
         <SwapContainer>
           <SwapHeader>
             <SwapTabs>
-              <SwapTab $active={sellMode} onClick={() => setSellMode(true)}>
-                Sell
-              </SwapTab>
-              <SwapTab $active={!sellMode} onClick={() => setSellMode(false)}>
-                Buy
-              </SwapTab>
+              <SwapTab $active>Swap</SwapTab>
             </SwapTabs>
             <SwapSettings
               slippageTolerance={swapState.slippageTolerance}
@@ -532,7 +574,7 @@ export function SwapForm() {
           {/* Input (From) section */}
           <InputContainer>
             <InputHeader>
-              {sellMode ? 'You sell' : 'You pay'}
+              You sell
             </InputHeader>
             <InputRow>
               <AmountInput
@@ -547,7 +589,6 @@ export function SwapForm() {
                 error={validation.tokenInError}
               />
             </InputRow>
-            {swapState.tokenIn && <USDValue>$0.00</USDValue>}
           </InputContainer>
           
           {/* Swap direction button */}
@@ -560,12 +601,12 @@ export function SwapForm() {
           {/* Output (To) section */}
           <InputContainer>
             <InputHeader>
-              {sellMode ? 'You buy' : 'You receive'}
+              You receive
             </InputHeader>
             <InputRow>
               <AmountInput
                 placeholder="0"
-                value={swapState.amountOut}
+                value={swapState.amountOut ? parseFloat(swapState.amountOut).toLocaleString(undefined, { maximumFractionDigits: 6 }) : ''}
                 readOnly
               />
               <TokenSelector
@@ -575,7 +616,6 @@ export function SwapForm() {
                 error={validation.tokenOutError}
               />
             </InputRow>
-            {swapState.tokenOut && <USDValue>$0.00</USDValue>}
           </InputContainer>
           
           {/* Swap button */}

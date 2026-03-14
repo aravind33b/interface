@@ -1,8 +1,9 @@
 import { useState, useCallback } from 'react'
 import { useWallet } from './useWallet'
-import { parseUnits, keccak256, encodePacked, encodeAbiParameters, maxUint256, encodeFunctionData, getAddress } from 'viem'
+import { parseUnits, formatUnits, keccak256, encodePacked, encodeAbiParameters, maxUint256, encodeFunctionData, getAddress } from 'viem'
 import { SUPPORTED_NETWORKS } from '../constants/networks'
 import { CONTRACTS } from '../constants/contracts'
+import { getPoolInfo, generatePoolId } from '../utils/stateViewUtils'
 import { V4Planner, Actions } from '@uniswap/v4-sdk'
 import { Token as SDKToken, Currency, TradeType, Percent, CurrencyAmount } from '@uniswap/sdk-core'
 import universalRouterAbi from '../../contracts/universalRouter.json'
@@ -401,13 +402,14 @@ export function useV4Swap() {
     amountIn: '',
     amountOut: '',
     poolKey: null,
-    slippageTolerance: 50, // 0.5%
+    slippageTolerance: 500, // 5%
     deadline: Math.floor(Date.now() / 1000) + 1800 // 30 minutes
   });
 
   const [validation, setValidation] = useState<SwapValidation>({});
   const [isSwapping, setIsSwapping] = useState(false);
   const [isValidatingPool, setIsValidatingPool] = useState(false);
+  const [isQuoting, setIsQuoting] = useState(false);
   const [poolInfo, setPoolInfo] = useState<PoolInfo | null>(null);
 
   // Update functions
@@ -422,6 +424,94 @@ export function useV4Swap() {
   const updateAmountIn = (amount: string) => {
     setSwapState(prev => ({ ...prev, amountIn: amount }));
   };
+
+  const updateAmountOut = (amount: string) => {
+    setSwapState(prev => ({ ...prev, amountOut: amount }));
+  };
+
+  const getQuote = useCallback(async (amountIn: string, tokenIn: Token, tokenOut: Token, poolKey: PoolKey) => {
+    if (!chainId || !network || !amountIn || parseFloat(amountIn) <= 0) {
+      updateAmountOut('');
+      return;
+    }
+
+    setIsQuoting(true);
+    try {
+      const poolId = generatePoolId(poolKey);
+      const pool = await getPoolInfo(chainId, network.rpcUrl, poolId);
+
+      if (!pool.exists || !pool.isInitialized) {
+        updateAmountOut('');
+        return;
+      }
+
+      const sqrtPriceX96 = BigInt(pool.sqrtPriceX96);
+      const liquidity = BigInt(pool.liquidity);
+
+      if (sqrtPriceX96 === 0n || liquidity === 0n) {
+        updateAmountOut('');
+        return;
+      }
+
+      const amountInWei = parseUnits(amountIn, tokenIn.decimals);
+      const zeroForOne = poolKey.currency0.toLowerCase() === tokenIn.address.toLowerCase();
+
+      // Calculate output using Uniswap v3/v4 math for a single-tick swap
+      // price = (sqrtPriceX96 / 2^96)^2 = token1 per token0
+      const Q96 = 1n << 96n;
+
+      let amountOutWei: bigint;
+      if (zeroForOne) {
+        // Selling token0 for token1
+        // New sqrtPrice after swap: L * sqrtP / (L + amountIn * sqrtP)
+        const newSqrtPrice = (liquidity * sqrtPriceX96 * Q96) / (liquidity * Q96 + amountInWei * sqrtPriceX96);
+        // amountOut = L * (sqrtP - newSqrtP) / Q96
+        amountOutWei = (liquidity * (sqrtPriceX96 - newSqrtPrice)) / Q96;
+      } else {
+        // Selling token1 for token0
+        // New sqrtPrice after swap: sqrtP + amountIn * Q96 / L
+        const newSqrtPrice = sqrtPriceX96 + (amountInWei * Q96) / liquidity;
+        // amountOut = L * (1/sqrtP - 1/newSqrtP) = L * Q96 * (newSqrtP - sqrtP) / (sqrtP * newSqrtP)
+        amountOutWei = (liquidity * Q96 * (newSqrtPrice - sqrtPriceX96)) / (sqrtPriceX96 * newSqrtPrice);
+      }
+
+      // Apply fee (fee is in hundredths of a bip, so 3000 = 0.3%)
+      const feeAmount = (amountInWei * BigInt(poolKey.fee)) / 1000000n;
+      // Recalculate with fee-adjusted input
+      const effectiveAmountIn = amountInWei - feeAmount;
+
+      if (effectiveAmountIn <= 0n) {
+        updateAmountOut('0');
+        return;
+      }
+
+      // Recalculate with effective amount
+      if (zeroForOne) {
+        const newSqrtPrice = (liquidity * sqrtPriceX96 * Q96) / (liquidity * Q96 + effectiveAmountIn * sqrtPriceX96);
+        amountOutWei = (liquidity * (sqrtPriceX96 - newSqrtPrice)) / Q96;
+      } else {
+        const newSqrtPrice = sqrtPriceX96 + (effectiveAmountIn * Q96) / liquidity;
+        amountOutWei = (liquidity * Q96 * (newSqrtPrice - sqrtPriceX96)) / (sqrtPriceX96 * newSqrtPrice);
+      }
+
+      if (amountOutWei < 0n) amountOutWei = 0n;
+
+      const formattedOut = formatUnits(amountOutWei, tokenOut.decimals);
+      // Trim trailing zeros while preserving precision for large numbers
+      const parts = formattedOut.split('.');
+      if (parts[1]) {
+        const trimmedDecimals = parts[1].replace(/0+$/, '');
+        updateAmountOut(trimmedDecimals ? `${parts[0]}.${trimmedDecimals}` : parts[0]);
+      } else {
+        updateAmountOut(parts[0]);
+      }
+    } catch (error) {
+      console.error('Quote calculation error:', error);
+      updateAmountOut('');
+    } finally {
+      setIsQuoting(false);
+    }
+  }, [chainId, network]);
 
   const updatePoolId = (poolKeyStr: string) => {
     try {
@@ -487,12 +577,22 @@ export function useV4Swap() {
     setIsSwapping(true);
 
     try {
+      // Apply slippage tolerance to the quoted output amount
+      // slippageTolerance is in bips (e.g. 50 = 0.5%)
+      let amountOutMinimum = '0';
+      if (swapState.amountOut && parseFloat(swapState.amountOut) > 0) {
+        const amountOutWei = parseUnits(swapState.amountOut, swapState.tokenOut.decimals);
+        const slippageFactor = 10000n - BigInt(swapState.slippageTolerance);
+        const minOutWei = (amountOutWei * slippageFactor) / 10000n;
+        amountOutMinimum = formatUnits(minOutWei, swapState.tokenOut.decimals);
+      }
+
       const result = await executeSwap({
         poolKey: swapState.poolKey,
         tokenIn: swapState.tokenIn,
         tokenOut: swapState.tokenOut,
         amountIn: swapState.amountIn,
-        amountOutMinimum: swapState.amountOut || '0',
+        amountOutMinimum,
         recipient: address,
         deadline: swapState.deadline,
         usePermit: true
@@ -516,10 +616,13 @@ export function useV4Swap() {
     updateTokenIn,
     updateTokenOut,
     updateAmountIn,
+    updateAmountOut,
     updatePoolId,
     updateSlippageTolerance,
     updateDeadline,
     swapTokens,
+    getQuote,
+    isQuoting,
     
     // Validation and execution
     validateSwap,
